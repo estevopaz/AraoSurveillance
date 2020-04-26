@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+
+'''
+Local Video Surveillance storage system
+'''
+
+from pathlib import Path
+import argparse
+import datetime
+import logging
+import logging.config
+import multiprocessing
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+import yaml
+
+import psutil
+
+
+CONF_PATH = Path('/etc/arao/surveillance')
+
+# Cache
+C_ = {
+    'Log': None,
+    'Cameras': list()
+}
+
+with open(CONF_PATH / 'config.yml') as file_open:
+    CONF = yaml.load(file_open)
+
+
+class UTCFormatter(logging.Formatter):
+    '''
+    Log formatter in UTC
+    '''
+    converter = time.gmtime
+
+
+def set_logger(level):
+    '''
+    Configure the logging and create a logger for the current module.
+    '''
+
+    # Get logging configuration
+    with open(CONF_PATH / 'logging.yml') as open_file:
+        log_dict = yaml.load(open_file)
+
+    # Set log times to UTC
+    log_dict['formatters']['simple']['()'] = UTCFormatter
+
+    # Set logging level
+    log_dict['root']['level'] = level
+    log_dict['handlers']['console']['level'] = level
+    log_dict['handlers']['file']['level'] = level
+
+    # Filling e-Mail configuration
+    log_dict['handlers']['email']['level'] = CONF['Email']['Level'].upper()
+    log_dict['handlers']['email']['mailhost'] = CONF['Email']['Server']
+    log_dict['handlers']['email']['fromaddr'] = CONF['Email']['From']
+    log_dict['handlers']['email']['toaddrs'] = CONF['Email']['To']
+    log_dict['handlers']['email']['credentials'] = (CONF['Email']['Login'],
+                                                    CONF['Email']['Password'])
+    log_dict['handlers']['email']['secure'] = ()
+
+    logging.config.dictConfig(log_dict)
+    C_['Log'] = logging.getLogger('AraoSurveillance')
+
+
+# Graceful exit management
+def signal_handler(_, __):
+    '''
+    Code to run when Flask application is shutdown.
+    '''
+    # Set SIGTERM to subprocesses
+    for camera in C_['Cameras']:
+        C_['Log'].info('Stop recording for "{}" ...'.format(camera['Name']))
+        camera['ffmpeg'].terminate()
+    C_['Log'].info('Thanks for use ;)')
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, signal_handler)
+
+
+def record(camera):
+    '''
+    Command launch.
+    '''
+    command = ['/usr/bin/ffmpeg',
+               '-loglevel', 'error',
+               '-i', camera['URL'],
+               '-c', 'copy',
+               '-f', 'segment',
+               '-segment_time', '3600',
+               '-strftime', '1',
+               str(Path(CONF['Storage']['Path']) / camera['Name'] / '%Y-%m-%d_%H:%M:%S.ts')]
+    C_['Log'].info('Start recording for "{}" ...'.format(camera['Name']))
+    C_['Log'].debug(' '.join(command))
+    camera['ffmpeg'] = subprocess.Popen(command,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout = camera['ffmpeg'].stdout.read()
+    stderr = camera['ffmpeg'].stderr.read()
+    if stdout:
+        C_['Log'].debug(stdout.decode('UTF-8'))
+    if b'Exiting normally' in stderr:
+        C_['Log'].debug(stderr.decode('UTF-8'))
+    else:
+        C_['Log'].error(stderr.decode('UTF-8'))
+        raise RuntimeError(stderr)
+
+
+def records():
+    '''
+    Get stored records.
+    '''
+    res = list()
+    for dirpath, _, filenames in os.walk(CONF['Storage']['Path']):
+        for filename in filenames:
+            if re.match(r'[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}:[0-9]{2}\.ts', filename):
+                file_date = datetime.datetime.strptime(filename, '%Y-%m-%d_%H:%M:%S.ts')
+                res.append((file_date, Path(dirpath) / filename))
+    return res
+
+
+def remove_older_records(days):
+    '''
+    Remove records older than given days.
+    '''
+    threshold = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+    for file_date, file_path in records():
+        if file_date < threshold:
+            os.unlink(file_path)
+            C_['Log'].info('Removed old record "{}".'.format(file_path))
+
+
+def remove_oldest_record():
+    '''
+    Remove oldest record.
+    '''
+    oldest = (None, None)
+    for file_date, file_path in records():
+        if not oldest[0] or oldest[0] > file_date:
+            oldest = (file_date, file_path)
+    if oldest[0]:
+        os.unlink(oldest[1])
+        C_['Log'].warning('Removed "{}" to free space !'.format(oldest[1]))
+
+
+def main():
+    '''
+    Video storage manager.
+    '''
+    # Start cameras recording
+    for camera in CONF['Cameras']:
+        # Ensure path
+        os.makedirs(Path(CONF['Storage']['Path']) / camera['Name'], exist_ok=True)
+        # Start recording
+        process = multiprocessing.Process(target=record, args=(camera,))
+        process.daemon = True
+        process.start()
+        camera['process'] = process
+        C_['Cameras'].append(camera)
+    C_['Log'].info('All cameras recording, keep calm ;)')
+
+    while True:
+
+        time.sleep(30)
+
+        # Check disk usage, ensure
+        if (100 - psutil.disk_usage(CONF['Storage']['Path']).percent
+                < float(CONF['Storage']['Min. disk space'].strip('%'))):
+            C_['Log'].error('Free disk under "{}" !, removing oldest record ...'
+                            .format(CONF['Storage']['Min. disk space']))
+            remove_oldest_record()
+
+        # Drop old records
+        remove_older_records(CONF['Storage']['Max. days to store'])
+
+        # Check record status
+        #   - Death thread -> Alarm
+        #   - Try start record again
+        for camera in C_['Cameras']:
+            if not camera['process'].is_alive():
+                C_['Log'].error('Record for "{}" crashed !, trying start again ...'
+                                .format(camera['Name']))
+                camera['process'].join()
+                process = multiprocessing.Process(target=record, args=(camera,))
+                process.daemon = True
+                process.start()
+                camera['process'] = process
+
+
+def parse_arguments(argv):
+    '''
+    Command line helper and parser.
+    '''
+    parser = argparse.ArgumentParser(description='AraoSurveillance')
+    parser.add_argument('--test_email', action='store_true', help='Test email configuration.')
+    parser.add_argument('--debug', action='store_const', const='DEBUG', default='INFO',
+                        help='Log in debug mode.')
+    return parser.parse_args(argv[1:])
+
+
+if __name__ == '__main__':
+    try:
+        ARGS = parse_arguments(sys.argv)
+        set_logger(ARGS.debug)
+        if ARGS.test_email:
+            C_['Log'].error('Testing email, if you are reading this in your email reader,'
+                            ' everything is OK ;)')
+            C_['Log'].info('Email test sent.')
+        else:
+            C_['Log'].info('AraoSurveillance starting ...')
+            C_['Log'].info('Note: All logs are in UTC')
+            main()
+    except Exception as error:
+        sys.exit(str(error))
+    sys.exit(0)

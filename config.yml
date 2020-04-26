@@ -1,0 +1,30 @@
+#
+# General settings
+#
+
+
+Storage:
+
+    Path:                /tmp/arao/surveillance
+    Min. disk space:     10%
+    Max. days to store:  31
+
+
+# Error notifications
+Email:
+
+    From:      user@domain.com
+    To:        user@domain.com
+    Level:     error  # ERROR or INFO
+    Server:    mail.domain.com  # SSL support mandatory
+    Login:     user
+    Password:  password
+
+
+Cameras:
+
+    # - Name:
+    #     URL: Video stream URL (i.e.: rtsp://IP/onvif1)
+
+    - Name:  Main door
+      URL:   rtsp://192.168.1.201/onvif1

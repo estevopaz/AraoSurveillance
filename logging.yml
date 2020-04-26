@@ -1,0 +1,36 @@
+version: 1
+disable_existing_loggers: False
+
+formatters:
+    simple:
+        format: '%(asctime)s : %(levelname)s : %(name)s : %(message)s'
+        datefmt: '%Y-%m-%d %H:%M:%S'
+
+root:
+    level: __RUNTIME_VALUE__
+    handlers: [console, file, email]
+
+handlers:
+    console:
+        class: logging.StreamHandler
+        level: __RUNTIME_VALUE__
+        formatter: simple
+        stream: ext://sys.stderr
+    file:
+        class: logging.handlers.RotatingFileHandler
+        level: __RUNTIME_VALUE__
+        formatter: simple
+        filename: /var/log/arao/surveillance.log
+        maxBytes: 5120000
+        backupCount: 5
+        encoding: utf8
+    email:
+        class: logging.handlers.SMTPHandler
+        level: __RUNTIME_VALUE__
+        formatter: simple
+        mailhost: __RUNTIME_VALUE__
+        fromaddr: __RUNTIME_VALUE__
+        toaddrs: __RUNTIME_VALUE__
+        subject: '[AraoSurveillance] Alert !'
+        credentials: __RUNTIME_VALUE__
+        timeout: 120
