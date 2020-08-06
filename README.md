@@ -49,22 +49,36 @@ Configuration must be done as __root__:
       chmod 775 /var/log/arao
       chgrp camera /var/log/arao
       
-- Now just edit the configuration file:
+- Edit your configuration file:
 
       nano /etc/arao/surveillance/config.yml
 
-  
+- Prepare systemd service:
+
+      ln -s ~/AraoSurveillance/conf/arao_surveillance.service /etc/systemd/system/
+      systemctl enable arao_surveillance.service
+
+
 ### Usage
 
-Prepare systemd service as user __camera__:
+Just check your configured path in */etc/arao/surveillance/config.yml*:
 
-      # Create systemd service under target user
-      mkdir -p ~/.config/systemd/user/
-      cd ~/.config/systemd/user/
-      ln -s ~/AraoSurveillance/conf/arao_surveillance.service
-      systemctl --user enable arao_surveillance.service
-      systemctl --user start arao_surveillance.service
-      systemctl --user status arao_surveillance.service
+    camera/                         <-- Your base path
+    └── Main door                   <-- Camera name
+        └── 2020-08-06_20:50:11.ts  <-- Raw records splitted by time
+
+I recommend share this path, by NFS for instance,
+to easily reproduce records with your favorite video player ;)
+
+Useful commands:
+
+- Check service status:
+
+      systemctl status arao_surveillance.service
+
+- Check service logs:
+
+      journalctl -u arao_surveillance.service
 
 
 ## ToDo
